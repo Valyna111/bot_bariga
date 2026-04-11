@@ -1,4 +1,4 @@
- #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 MangaBuff.ru Авторизация, регистрация, парсинг желаемых карт и владельцев карт
 """
