@@ -11,6 +11,7 @@ import html
 import threading
 import time
 import random
+import re  # <--- ДОБАВЛЕНО
 from pathlib import Path
 
 try:
@@ -35,7 +36,7 @@ if not BOT_TOKEN:
     sys.exit(1)
 
 # Конфигурация мониторинга
-CHECK_INTERVAL = 30  # секунд между проверками (можно изменить)
+CHECK_INTERVAL = 30  # секунд между проверками
 MAX_RETRIES = 3       # количество повторных попыток при ошибке
 
 SESSIONS_FILE = Path(__file__).parent / "tg_sessions.json"
@@ -164,7 +165,6 @@ def monitoring_loop(chat_id):
             owner = None
             for attempt in range(MAX_RETRIES):
                 try:
-                    # Создаём свежую сессию для каждого запроса (чтобы избежать проблем с закрытым соединением)
                     fresh_auth = get_auth_for_user(chat_id)
                     owner = fresh_auth.get_first_owner(card_id)
                     if owner is not None:
@@ -173,6 +173,7 @@ def monitoring_loop(chat_id):
                             try:
                                 card_page = fresh_auth.session.get(f"{fresh_auth.BASE_URL}/cards/{card_id}")
                                 if card_page.status_code == 200:
+                                    # Поиск og:image
                                     img_match = re.search(r'<meta[^>]*property="og:image"[^>]*content="([^"]+)"', card_page.text)
                                     if img_match:
                                         card_image_url = img_match.group(1)
@@ -180,12 +181,12 @@ def monitoring_loop(chat_id):
                                         img_match2 = re.search(r'<img[^>]*class="[^"]*card-show__image[^"]*"[^>]*src="([^"]+)"', card_page.text)
                                         if img_match2:
                                             card_image_url = img_match2.group(1)
-                            except:
-                                pass
+                            except Exception as e_img:
+                                print(f"[MONITOR] Ошибка получения картинки: {e_img}")
                         break
                 except Exception as e:
                     print(f"[MONITOR] Ошибка при получении владельца карты {card_id}, попытка {attempt+1}: {e}")
-                    time.sleep(2 ** attempt)  # экспоненциальная задержка
+                    time.sleep(2 ** attempt)
                     continue
             if owner is None:
                 continue
@@ -194,30 +195,37 @@ def monitoring_loop(chat_id):
             if owner.get('user_id') == my_user_id:
                 continue
 
-            current_owner_key = owner.get('card_user_id') or owner.get('user_id')
+            # Используем user_id в качестве уникального ключа владельца
+            current_owner_id = owner.get('user_id')
+            if not current_owner_id:
+                continue
+
             previous = owners_state.get(card_id)
 
             if previous is None:
-                # Первый запуск
+                # Первый запуск: сохраняем информацию о владельце
                 owners_state[card_id] = {
-                    'owner_key': current_owner_key,
+                    'user_id': current_owner_id,
                     'username': owner['username'],
-                    'user_id': owner['user_id'],
-                    'card_user_id': owner['card_user_id']
+                    'card_user_id': owner.get('card_user_id'),
+                    'is_online': owner.get('is_online', False),
+                    'handshake': owner.get('handshake', False),
+                    'trade_lock': owner.get('trade_lock', False)
                 }
                 save_owners_state()
-            elif previous.get('owner_key') != current_owner_key:
+                print(f"[MONITOR] Карта {card_id} инициализирована, владелец {current_owner_id}")
+            elif previous.get('user_id') != current_owner_id:
                 # Новый владелец!
                 message = f"🆕 *Новый владелец карты!*\n\n"
                 message += f"🎴 *Карта:* {html.escape(card_name)}\n"
                 message += f"🔗 [Ссылка на карту]({card_url})\n\n"
                 message += f"👤 *Новый владелец:* {html.escape(owner['username'])}\n"
                 message += f"🔗 [Профиль владельца]({owner['profile_url']})\n"
-                if owner['is_online']:
+                if owner.get('is_online'):
                     message += "🟢 Онлайн\n"
-                if owner['handshake']:
+                if owner.get('handshake'):
                     message += "🤝 Готов к обмену\n"
-                if owner['trade_lock']:
+                if owner.get('trade_lock'):
                     message += "🔒 Обмен заблокирован\n"
 
                 try:
@@ -225,15 +233,18 @@ def monitoring_loop(chat_id):
                         bot.send_photo(chat_id, card_image_url, caption=message, parse_mode='HTML')
                     else:
                         bot.send_message(chat_id, message, parse_mode='HTML', disable_web_page_preview=True)
+                    print(f"[MONITOR] Уведомление отправлено для карты {card_id}: новый владелец {current_owner_id}")
                 except Exception as e:
                     print(f"[MONITOR] Ошибка отправки уведомления: {e}")
 
                 # Обновляем состояние
                 owners_state[card_id] = {
-                    'owner_key': current_owner_key,
+                    'user_id': current_owner_id,
                     'username': owner['username'],
-                    'user_id': owner['user_id'],
-                    'card_user_id': owner['card_user_id']
+                    'card_user_id': owner.get('card_user_id'),
+                    'is_online': owner.get('is_online', False),
+                    'handshake': owner.get('handshake', False),
+                    'trade_lock': owner.get('trade_lock', False)
                 }
                 save_owners_state()
 
